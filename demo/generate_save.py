@@ -1,7 +1,7 @@
 import os, argparse
 
 import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaForCausalLM
+from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaTokenizer, LlamaForCausalLM
 from mersenne import mersenne_rng
 
 def generate_shift(model,prompt,vocab_size,n,m,key):
@@ -32,10 +32,13 @@ def exp_sampling(probs,u):
     return torch.argmax(u ** (1/probs),axis=1).unsqueeze(-1)
 
 def main(args):
+    if args.model_type == 'llama' and args.model_path is None:
+        raise ValueError("--model_path must be provided when using --model_type=llama")
+        
     torch.manual_seed(args.seed)
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
 
-    if args.model == 'llama':
+    if args.model_type == 'llama':
         tokenizer = AutoTokenizer.from_pretrained(args.model_path, use_fast=False)
         model = LlamaForCausalLM.from_pretrained(
             args.model_path,
@@ -46,22 +49,32 @@ def main(args):
         tokenizer = AutoTokenizer.from_pretrained(args.model)
         model = AutoModelForCausalLM.from_pretrained(args.model).to(device)
 
+    # 修改 prompt 格式以适应 Llama 3
     formatted_prompt = f"""Please rephrase this sentence while keeping the meaning unchanged:
 {args.prompt} """
 
-    tokens = tokenizer.encode(formatted_prompt, return_tensors='pt', truncation=True, max_length=2048)
+    inputs = tokenizer(formatted_prompt, return_tensors="pt").to(device)
+    
+    outputs = model.generate(
+        **inputs,
+        max_new_tokens=args.m,
+        do_sample=True,
+        temperature=0.7,
+        pad_token_id=tokenizer.pad_token_id,
+    )
 
-    watermarked_tokens = generate_shift(model,tokens,len(tokenizer),args.n,args.m,args.key)[0]
-    watermarked_text = tokenizer.decode(watermarked_tokens, skip_special_tokens=True)
-
-    print(watermarked_text)
+    # 解码时跳过输入的 prompt 部分
+    prompt_length = len(inputs.input_ids[0])
+    generated_text = tokenizer.decode(outputs[0][prompt_length:], skip_special_tokens=True)
+    
+    print(generated_text)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='generate text watermarked with a key')
     parser.add_argument('--model',default='facebook/opt-1.3b',type=str,
             help='a HuggingFace model id of the model to generate from')
-    parser.add_argument('--prompt',default='Return values in IP and the units to which the values have been converted.',type=str,
-            help='an optional prompt for generation')
+    parser.add_argument('--prompt',default='The function is to implement a shortest path algorithm.',type=str,
+            help='the user prompt to be retold')
     parser.add_argument('--m',default=80,type=int,
             help='the requested length of the generated text')
     parser.add_argument('--n',default=256,type=int,
@@ -70,9 +83,10 @@ if __name__ == '__main__':
             help='a key for generating the random watermark sequence')
     parser.add_argument('--seed',default=0,type=int,
             help='a seed for reproducibile randomness')
-    # parser.add_argument('--model_type',default='opt',type=str,
-    #         help='the type of model to use')
-    parser.add_argument('--model_path',default="/home/huang/LLaMA-Factory/Meta-Llama-3-8B-Instruct",type=str,
-            help='the path to the model to use when using --model_type=llama')
+    parser.add_argument('--model_type', default='opt', 
+                       choices=['opt', 'gpt2', 'llama'],
+                       help='Type of model to use')
+    parser.add_argument('--model_path', default=None, type=str,
+                       help='Path to local model weights')
 
     main(parser.parse_args())
