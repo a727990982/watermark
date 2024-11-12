@@ -13,7 +13,11 @@ pyximport.install(reload_support=True,
 # 然后使用完整的相对路径导入 levenshtein
 from levenshtein import levenshtein
 
-def permutation_test(tokens,key,n,k,vocab_size,n_runs=100):
+def permutation_test(tokens,key,n,k,vocab_size,n_runs=None):
+    # 根据文本长度自适应调整运行次数
+    if n_runs is None:
+        n_runs = max(100, min(500, len(tokens)//10))
+        
     rng = mersenne_rng(key)
     xi = np.array([rng.rand() for _ in range(n*vocab_size)], dtype=np.float32).reshape(n,vocab_size)
     test_result = detect(tokens,n,k,xi)
@@ -31,6 +35,11 @@ def permutation_test(tokens,key,n,k,vocab_size,n_runs=100):
 
 def detect(tokens, n, k, xi, gamma=0.0):
     m = len(tokens)
+    if m < 50:  # 短文本
+        k = min(k, m//4)  # 使用更小的窗口
+    elif m > 200:  # 长文本
+        k = min(k, m//10)  # 使用相对更大的窗口
+    
     n = len(xi)
     
     A = np.empty((m-(k-1), n))
@@ -40,7 +49,17 @@ def detect(tokens, n, k, xi, gamma=0.0):
             xi_slice = xi[j].reshape(1,-1)
             A[i][j] = levenshtein(token_slice, xi_slice, gamma)
     
-    return np.min(A)
+    # 使用多个统计量综合判断
+    min_val = np.min(A)
+    mean_val = np.mean(A)
+    std_val = np.std(A)
+
+    # 计算两种得分
+    score1 = min_val # 原始方法
+    score2 = min_val * (1 + std_val/mean_val) # 改进方法
+
+    # 返回综合得分
+    return min(score1,score2)
 
 
 def main(args):
@@ -65,7 +84,7 @@ if __name__ == '__main__':
             help='a HuggingFace model id of the tokenizer used by the watermarked model')
     parser.add_argument('--tokenizer_path',default="/home/huang/LLaMA-Factory/Meta-Llama-3-8B-Instruct",type=str,
             help='the path to the tokenizer to use when using --model_type=llama')
-    parser.add_argument('--n',default=256,type=int,
+    parser.add_argument('--n',default=5,type=int,
             help='the length of the watermark sequence')
     parser.add_argument('--key',default=42,type=int,
             help='the seed for the watermark sequence')

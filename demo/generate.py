@@ -4,7 +4,7 @@ import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM, LlamaForCausalLM
 from mersenne import mersenne_rng
 
-def generate_shift(model,prompt,vocab_size,n,m,key):
+def generate_shift(model,prompt,vocab_size,n,m,key,tokenizer):
     rng = mersenne_rng(key)
     xi = torch.tensor([rng.rand() for _ in range(n*vocab_size)]).view(n,vocab_size)
     shift = torch.randint(n, (1,))
@@ -12,6 +12,7 @@ def generate_shift(model,prompt,vocab_size,n,m,key):
     inputs = prompt.to(model.device)
     attn = torch.ones_like(inputs)
     past = None
+    
     for i in range(m):
         with torch.no_grad():
             if past:
@@ -21,8 +22,13 @@ def generate_shift(model,prompt,vocab_size,n,m,key):
 
         probs = torch.nn.functional.softmax(output.logits[:,-1, :vocab_size], dim=-1).cpu()
         token = exp_sampling(probs,xi[(shift+i)%n,:]).to(model.device)
+        
+        # 解码当前token看看是否包含换行符
+        token_text = tokenizer.decode([token.item()])
+        if '\n' in token_text:
+            break
+            
         inputs = torch.cat([inputs, token], dim=-1)
-
         past = output.past_key_values
         attn = torch.cat([attn, attn.new_ones((attn.shape[0], 1))], dim=-1)
 
@@ -43,15 +49,20 @@ def main(args):
             device_map="auto"
         )
     else:
-        tokenizer = AutoTokenizer.from_pretrained(args.model)
+        tokenizer = AutoTokenizer.from_pretrained(args.model)              
         model = AutoModelForCausalLM.from_pretrained(args.model).to(device)
 
-    formatted_prompt = f"""Please rephrase this sentence while keeping the meaning unchanged:
-{args.prompt} """
+#     formatted_prompt = f"""Below is a sentence. Your task is to rephrase it in a different way while keeping the exact same meaning. 
+# Original sentence: "{args.prompt}" \n
+# Rephrased sentence:"""
+
+    formatted_prompt = f"""Below is a sentence. Your task is to extend it to 20 tokens in one sentence while keeping the exact same meaning:
+Original sentence: "{args.prompt}" \n
+Rephrased sentence:"""
 
     tokens = tokenizer.encode(formatted_prompt, return_tensors='pt', truncation=True, max_length=2048)
 
-    watermarked_tokens = generate_shift(model,tokens,len(tokenizer),args.n,args.m,args.key)[0]
+    watermarked_tokens = generate_shift(model,tokens,len(tokenizer),args.n,args.m,args.key, tokenizer)[0][len(tokens[0]):]
     watermarked_text = tokenizer.decode(watermarked_tokens, skip_special_tokens=True)
 
     print(watermarked_text)
@@ -60,11 +71,11 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='generate text watermarked with a key')
     parser.add_argument('--model',default='facebook/opt-1.3b',type=str,
             help='a HuggingFace model id of the model to generate from')
-    parser.add_argument('--prompt',default='Return values in IP and the units to which the values have been converted.',type=str,
+    parser.add_argument('--prompt',default="set input parameters for elegant tracking, available keys: 'ltefile', 'elefile'.",type=str,
             help='an optional prompt for generation')
-    parser.add_argument('--m',default=80,type=int,
+    parser.add_argument('--m',default=50,type=int,
             help='the requested length of the generated text')
-    parser.add_argument('--n',default=256,type=int,
+    parser.add_argument('--n',default=5,type=int,
             help='the length of the watermark sequence')
     parser.add_argument('--key',default=42,type=int,
             help='a key for generating the random watermark sequence')
